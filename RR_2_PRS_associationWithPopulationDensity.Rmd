@@ -1,5 +1,5 @@
 ---
-title: "Recovering post-codes of the UKB participants and crossing with census data"
+title: "Association analysis between SCZ PRS and population density"
 author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
 output:
   epuRate::PCTG:
