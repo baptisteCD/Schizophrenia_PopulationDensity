@@ -1,0 +1,307 @@
+---
+title: "Estimating population density of where the UKB participants live"
+author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    code_folding: "show"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+# re install gsmr
+#install.packages("http://cnsgenomics.com/software/gsmr/static/gsmr_1.0.6.tar.gz",repos=NULL,type="source")
+
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(lmtest)
+library(readr)
+library(qqman)
+library(TwoSampleMR)
+library(gsmr)
+library(ggmap)
+```
+
+<br><br><br><br>
+
+# Convert OSNG coordinates into post code and/or parish
+
+<https://www.doogal.co.uk/BatchReverseGeocoding.php>  
+Brilliant website to query postcodes from google - fast if you provide 100 coordinates at a time  
+Not capped in term of queries per day, I did 15K in a few hours
+At the moment the UKB data is rounded to 1km, so it only makes sense to use post code district (a few thousand across england)  
+Format AAX  
+
+<https://www.nomisweb.co.uk/census/2011/key_statistics>
+Allows to also extract information by postcode, parishes etc..  
+At the moment, I got the population density but we can extract all the data collected as part of the census, which may be useful in the future  
+Note that the data is only available for the UK and Wales as Scotland has its own bureau of statistics
+
+<http://www.scotlandscensus.gov.uk/ods-analyser/>
+For scotland the data is by small postcodes but we can easily aggregate it by postcode district  
+
+PRS were calculated by Maciej Trzaskowski  
+PCs and GRM calculated by Kathryn Kemper and Zhili Zheng  
+
+## Extract UKB demographics and fields used in the following 
+
+From our data dictionary we want to extract the values for fields:   
+0	eid	502629	Sequence	Encoded anonymised participant ID  
+7	31-0.0	502629	Categorical (single)	Sex  
+8	34-0.0	502629	Integer	Year of birth  
+4147	22200-0.0	120394	Integer	Year of birth  
+25	53-0.0	502629	Date	Date of attending assessment centre  
+143	129-0.0 Place of birth in UK - north co-ordinate  
+146	130-0.0	Place of birth in UK - east co-ordinate  
+152	189-0.0	502002	Continuous	Townsend deprivation index at recruitment  
+2564	20074-0.0	497661	Integer	Home location at assessment - east co-ordinate (rounded)  
+2566	20075-0.0	497661	Integer	Home location at assessment - north co-ordinate (rounded)  
+261	738-0.0	496609	Categorical (single)	Average total household income before tax  
+4074	21003-0.0	502629	Integer	Age when attended assessment centre  
+4080	21022-0.0	502629	Integer	Age at recruitment  
+4082	22001-0.0	152724	Categorical (single)	Genetic sex  
+
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="Path/onCluster/whereUKB/stored"
+cd $wd
+
+zcat $wd/9280_12505_UKBiobank.tab.gz | cut -f1,8,9,26,144-149,153,2565-2568,262,4075,4081,4083 > 9280_12505_UKBiobank_SCZ_whereYouLive_15032017.tab
+
+```
+
+## Extract set of unique OSNG coordinates to match with postcodes
+ 
+```{r, message=FALSE}
+
+# Table extracted from the .tab UKB file, with fields of interest for the analysis
+UKBselectedVars=read.table("0_Data/9280_12505_UKBiobank_SCZ_whereYouLive_15032018.tab", header=T)
+# 502,629 participants
+
+# Get all unique pairs of Est-North coordinates for analysis
+UKBselectedVars$UK_EN=paste0(UKBselectedVars$f.20074.0.0, UKBselectedVars$f.20075.0.0)
+length(unique(UKBselectedVars$UK_EN))
+
+# Get rid of missing values (participants with no current address)
+UKBselectedVars=UKBselectedVars[-which(is.na(UKBselectedVars$f.20074.0.0)),]
+# 497,661 participants
+
+# Write csv file of all unique East-North coordinates to make the reverse geo-matching more efficient and fast
+uniqueENlocation=as.data.frame(unique(UKBselectedVars$UK_EN))
+colnames(uniqueENlocation)="UK_EN"
+uniqueENlocation$Est=substr(uniqueENlocation$UK_EN, 1,6)
+uniqueENlocation$North=substr(uniqueENlocation$UK_EN, 7,12)
+#write.csv(uniqueENlocation[,c("Est", "North")], "UKB_unique_locationsForPostcodeMatching.csv", row.names = F, quote=F)
+# 15,214 unique combinations
+
+
+```
+
+> We used https://www.doogal.co.uk/BatchReverseGeocoding.php to perform most of the reverse coding
+> The coordinates were split into lists to fasten the process
+
+## Open reverse geocoded data
+
+```{r, message=FALSE}
+
+# Loop on all files and bind them
+geoAll=NULL
+for (iii in 1:140){
+  geo=read.csv(paste0("reverseGeoCoding/locations",iii,".csv"), stringsAsFactors = F, colClasses = c(rep("numeric", 2), rep("character", 9 ), "numeric") )
+  geoAll=rbind(geoAll,geo)
+}
+
+# We get additional information such as the altitude
+hist(geoAll$Altitude, breaks=100)
+
+# E-N coordinates in a single variable
+geoAll$UK_EN=paste0(geoAll$Easting, geoAll$Northing)
+length(unique(geoAll$UK_EN))
+
+# Remove duplicates (caused by me reverse coding twice the same batch)
+geoAll=geoAll[-which(duplicated(geoAll$UK_EN)),]
+
+# Extract the positions not matched
+LocNotPresent=uniqueENlocation[-which(uniqueENlocation$UK_EN %in% geoAll$UK_EN),]
+length(unique(LocNotPresent$UK_EN))
+#write.csv(LocNotPresent[,c("Est", "North")], "UKB_locations2Rerun.csv", row.names = F, quote=F)
+# Those were re-run to extract the corresponding postcode
+
+# Add re-runs to the previous ones
+geoRe=NULL
+for (iii in 1:3){
+  geo=read.csv(paste0("reverseGeoCoding/locations2_",iii,".csv"), stringsAsFactors = F, colClasses = c(rep("numeric", 2), rep("character", 9 ), "numeric") )
+  geoRe=rbind(geoRe,geo)
+  
+}
+geoRe$UK_EN=paste0(geoRe$Easting, geoRe$Northing)
+
+# Bind the datasets
+geoAll=rbind(geoAll, geoRe)
+length(unique(geoAll$UK_EN)) # 15214 uniques but 15436 total
+
+write.csv(geoAll,"0_Data/reverseGeoCoding_Combined.csv", row.names = F)
+
+```
+
+# Checks using ggmap package and get missing values
+
+```{r, message=FALSE}
+
+# This R package may be used to achieve geocoding or reverse geocoding
+# It uses google maps and data extraction is limited to 2,500 adresses a day
+library(ggmap)
+library(rgdal)
+
+# Create the SpatialPointsDataFrame
+uniqueENlocation$Est=as.numeric(uniqueENlocation$Est)
+uniqueENlocation$North=as.numeric(uniqueENlocation$North)
+GP_SP <- SpatialPointsDataFrame(uniqueENlocation[,c("Est", "North")], data = data.frame(UK_EN=uniqueENlocation$UK_EN, Est=uniqueENlocation$Est, North=uniqueENlocation$North), proj4string = CRS("+init=epsg:27700"))
+
+# Plot the points 
+png("Plot_UKB_observations_longitudeLatitude.png", width = 10, height = 10, units = "cm", res = 400)
+plot(GP_SP) # We have regions with  missing data (which are less populated or not represented in UKB)
+dev.off()
+
+# Convert from Eastings and Northings to Latitude and Longitude
+GP_SP_LL=spTransform(GP_SP, CRS("+init=epsg:4326"))
+
+# Extract 10 geoloc and compare to the results obtained
+for (iii in 314:324){
+print(revgeocode(location = c(GP_SP_LL@coords[iii,])))
+  print(GP_SP_LL[iii,])
+print( geoAll[which(geoAll$UK_EN==GP_SP_LL$UK_EN[iii]), ] )
+}
+# All the same as from the website used
+
+```
+
+# Format the scottish census data
+
+```{r, message=FALSE}
+
+popScot=read.csv("0_Data/PopulationDensityScotland_postcodes.csv")
+popScot$PostcodeDistrict=gsub( "\\s.*", "", popScot$Postcode ) 
+
+popPostCodeScot=NULL
+for (iii in unique(popScot$PostcodeDistrict)){
+  districtData=popScot[which(popScot$PostcodeDistrict==iii),]
+  popTot=sum(districtData$Person)
+  surfaceTot=sum(districtData$Hectarage.of.Output.Area)
+  popPostCodeScot=rbind(popPostCodeScot, c(iii, popTot, surfaceTot, popTot/surfaceTot))
+  
+}
+
+popPostCodeScot=as.data.frame(popPostCodeScot)
+colnames(popPostCodeScot)=c("postcodeDistrict", "PopulationTotal", "SurfaceTotal", "PopulationDensity")
+write.csv(popPostCodeScot, "0_Data/PopultionDensity_postcodeDistrict_scotland.csv", row.names = F)
+
+```
+
+# Merge postcode data and population density per postcode for the whole UKB sample
+
+
+```{r, message=FALSE}
+
+# Create district postcode (outbound)
+pcList=as.data.frame(table(geoAll$Postcode)) # 
+geoAll$PostcodeDistrict=gsub( "\\s.*", "", geoAll$Postcode ) 
+
+# Add postcodes to indivudals East/North data
+dat=merge(UKBselectedVars, geoAll, by="UK_EN", all.x=T)
+
+# Inspect missing values
+misDat=dat[which(is.na(dat$Postcode) | dat$Postcode==""),] # 8141 people
+misDat=misDat[-which(duplicated(misDat$UK_EN)),] # 474 missing localities 
+
+geoAll[which(geoAll$UK_EN %in% misDat$UK_EN), ] # blank postcodes or not present in the geoAll data
+
+# Check where these people live 
+GP_SP_miss <- SpatialPointsDataFrame(misDat[,c("f.20074.0.0", "f.20075.0.0")], data = misDat, proj4string = CRS("+init=epsg:27700"))
+
+# Plot the points 
+plot(GP_SP_miss) # They seem a bit everywhere, so maybe the rounded location ends up in the middle of nowhere?
+
+# Convert from Eastings and Northings to Latitude and Longitude
+GP_SP_LL_mis=spTransform(GP_SP_miss, CRS("+init=epsg:4326"))
+
+
+#############################
+# Check postcodes using ggmap
+library(plyr)
+
+dim(GP_SP_LL_mis@coords)
+res=NULL
+for (iii in 1:dim(GP_SP_LL_mis@coords)[1]){
+res=rbind.fill(res,revgeocode(location = c(GP_SP_LL_mis@coords[iii,]) , output = 'more'))
+}
+
+res=cbind(GP_SP_LL_mis@data$UK_EN, res)
+colnames(res)[1]="UK_EN"
+res$postal_code_district=gsub( "\\s.*", "", res$postal_code ) 
+
+#  Some addresses / postcodes were recovered and can be added to the data
+dat=merge(dat, res, by="UK_EN", all.x=T)
+
+# Combine post code data
+length(which(is.na(dat$PostcodeDistrict) | dat$PostcodeDistrict==""))
+
+dat$PostcodeDistrictAll=dat$PostcodeDistrict
+dat$PostcodeDistrictAll[which(is.na(dat$PostcodeDistrict) | dat$PostcodeDistrict=="")]=dat$postal_code_district[which(is.na(dat$PostcodeDistrict) | dat$PostcodeDistrict=="")]
+length(which(is.na(dat$PostcodeDistrictAll) | dat$PostcodeDistrictAll=="")) # 3383 participants remaining with no post code (matching failed)
+
+# Check district postcodes 
+table(dat$PostcodeDistrictAll)
+
+# Add England/Wales population density from postcodes 
+popden=read.csv("../UKB_replication/0_Data/bulk_postcodedistrict.csv")
+
+# Data is missing for the scots and for participants with missing postcodes
+dat=merge(dat, popden, by.x="PostcodeDistrictAll", by.y="geography", all.x=T)
+dat2=merge(dat, popden, by.x="PostcodeDistrictAll", by.y="geography")
+length(dat$f.eid)-length(dat2$f.eid) # 38904 participants excluded
+
+hist(dat$Variable..Density..number.of.persons.per.hectare...measures..Value, breaks=1000)
+hist(dat$Altitude, breaks=1000)
+
+plot(dat2$Altitude, dat2$Variable..Density..number.of.persons.per.hectare...measures..Value)
+
+# Add scottish data
+dat=merge(dat, popPostCodeScot, by.x="PostcodeDistrictAll", by.y="postcodeDistrict", all.x=T)
+
+hist(dat$PopulationDensity, breaks=50)
+hist(dat$Variable..Density..number.of.persons.per.hectare...measures..Value, breaks=1000)
+
+length(unique(dat$PostcodeDistrictAll))
+
+```
+
+
+# Add PRS and genetic PCs
+
+```{r, message=FALSE}
+
+# Add prs
+prs49=as.data.frame(dat[,c("f.eid")])
+colnames(prs49)="IID"
+for (ii in 1:10){
+prs=read_table2(paste0("0_Data/scz49.S", ii, ".profile"))
+prs=prs[,c("IID", "SCORE")]
+colnames(prs)=c("IID", paste0("prs49.s", ii))
+prs49=merge(prs49, prs, by="IID")
+}
+
+dat=merge(dat, prs49, by.x="f.eid", by.y="IID", all.x=T)
+
+# Add genetic PCs calculated on europeans only (different than UKB ones that were calculated on the whole sample, for example, the first 2 PCS here do not correspnd to different continent ancestry)
+PCs=read_table2("0_Data/ukbEUR_PC40_v2.txt")
+dat=merge(dat, PCs, by.x="f.eid", by.y="IID", all.x=T)
+
+# Save table with all new fields used in the analysis
+write.table(dat[,c("f.eid", "PostcodeDistrictAll"  , "Altitude", "Admin.level.1",  "Admin.level.2" , "prs49.s1", "prs49.s2", "prs49.s3" , "prs49.s4" , "prs49.s5" , "prs49.s6"    , "prs49.s7", "prs49.s8", "prs49.s9" , "prs49.s10", "PC1" , "PC2", "PC3" , "PC4"  , "PC5" , "PC6", "PC7", "PC8"  ,"PC9"  , "PC10"   , "PC11"  , "PC12" , "PC13", "PC14"    , "PC15"   , "PC16"  , "PC17"     , "PC18"    , "PC19" , "PC20" , "PC21"  , "PC22"  , "PC23" , "PC24"     , "PC25"     , "PC26"  , "PC27"  , "PC28"  , "PC29"  , "PC30"   , "PC31"  , "PC32"    , "PC33" , "PC34" , "PC35"   , "PC36"     , "PC37"     ,"PC38"   , "PC39" , "PC40" )], "UKB_data_postcodeDistrict_fullSample_UKBreturnData.csv", row.names=F, col.names = T, quote=F, sep="\t")
+colnames(dat)
+```
+
+
+<br><br>

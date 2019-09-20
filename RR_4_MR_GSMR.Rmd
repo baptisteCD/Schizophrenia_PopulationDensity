@@ -1,0 +1,1177 @@
+---
+title: "MR analysis in the UKB (same code used for QTIM, NTR QSKIN)"
+author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    code_folding: "show"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Libraries
+# re install gsmr
+#install.packages("http://cnsgenomics.com/software/gsmr/static/gsmr_1.0.6.tar.gz",repos=NULL,type="source")
+
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(lmtest)
+library(readr)
+library(qqman)
+library(TwoSampleMR)
+library(gsmr)
+library(ggmap)
+```
+
+<br><br><br><br>
+
+# Run MR base and GSMR of SCZ predicting Population density
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+scz_file <- read.table("../scz2.snp.results_subset.txt")
+colnames(scz_file)<-c("CHR", "SNP", "effect_allele", "other_allele", "BP", "INFO", "OR", "se", "pval", "ngt")
+scz_file$beta<-log(scz_file$OR)
+scz_file$exposure<-"scz"
+scz_file$CHRBP<-paste(substr(scz_file$CHR,start = 4, stop = 4), scz_file$BP, sep = ":")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = scz_file$SNP,
+      filename = "GWAS/PodDen2010GWAS_noSES.res",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "BETA",
+    se_col = "SE",
+    effect_allele_col = "ALLELE1",
+    other_allele_col = "ALLELE0",
+    eaf_col = "A1FREQ",
+    pval_col = "P_BOLT_LMM_INF") # Fewer SNPs than using QIMR (but could be due to imputation problems in the UKB)
+
+outcome_dat_UKB$samplesize.outcome=448679
+
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(scz_file$CHR)
+
+sczMR<-format_data(scz_file, type ="exposure")
+sczMR$samplesize.exposure<-150064
+
+datMR <- harmonise_data( exposure_dat = sczMR, outcome = outcome_dat_UKB, action = 2) # 5875 SNPs
+aa<-merge(sczMR, outcome_dat_UKB, by="SNP")
+
+datClump <- clump_data(datMR) # 96 SNPs (94 before)
+
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_SCZ_pred_PodDen/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_SCZ_pred_PodDen/SCZ_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+## Extract SNP data from the UKB to estimate the LD matrix
+
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="working/directory"
+medici="where/GRM/and/genetic/data/lives"
+cd ${wd}
+
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.4 --bfile ${medici}/ukbEUR_imp_chr{TASK_ID}_v2_imp_QC_HRC --extract ${wd}/SCZ_UKB_clumped_snps.allele --update-ref-allele ${wd}/SCZ_UKB_clumped_snps.allele --recode --out ${wd}/gsmr_SNPfile_CHR{TASK_ID} " 1 10G GWAS_ses 24:00:00 "-array=1-22 -acct=UQ-IMB-CNSG"
+
+```
+
+## Calculate LD matrix
+
+```{r, message=FALSE}
+
+snp0=read.table(paste0("0_Data/gsmr_SNPfile_CHR", 1, ".xmat.gz"),header=T, stringsAsFactors = F)
+
+allSNP=as.data.frame(snp0$IID)
+colnames(allSNP)="IID"
+
+
+for (iii in 1:22){
+  snp=NULL
+  if (file.exists( paste0("0_Data/gsmr_SNPfile_CHR", iii, ".xmat.gz") )){
+    snp=read.table(paste0("0_Data/gsmr_SNPfile_CHR", iii, ".xmat.gz"),header=T, stringsAsFactors = F)
+    snp=snp[-1,] # get rid of reference allele
+    snp=snp[which(snp$IID %in% snp0$IID),]
+    snp$FID=NULL
+    allSNP=merge(allSNP, snp, by="IID")
+  }
+    print(iii)
+}
+
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(allSNP)[-1] ) # not in the same order 
+
+allSNPordered=as.data.frame(allSNP$IID)
+colnames(allSNPordered)="IID"
+for (snp in as.character(datClump$SNP)){
+  allSNPordered[,snp]=as.numeric(allSNP[,snp])
+  }
+
+cbind(as.character(datClump$SNP), colnames(allSNPordered)[-1] ) # in the same order 
+allSNPordered$IID=NULL
+
+# Calculate the LD correlation matrix
+ldrho = cor(allSNPordered, use = "p")
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+# Plot results
+png("GSMR_results_SCZ_PodDen_UKB.png", width = 15, height = 15, units = "cm", res = 300)
+effect_col = colors()[75]
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+par(mar=c(5,5,4,2))
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+abline(0, gsmr_results$bxy, lwd=1.5, lty=2, col="dim grey")
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+dev.off()
+
+
+# Plot results (standardised)
+png("GSMR_results_SCZ_PodDen_UKB_std.png", width = 15, height = 15, units = "cm", res = 300)
+
+effect_col = colors()[75]
+vals = c(datClump$std_bzx-datClump$std_bzx_se, datClump$std_bzx+datClump$std_bzx_se)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$std_bzy-datClump$std_bzy_se, datClump$std_bzy+datClump$std_bzy_se)
+ymin = min(vals); ymax = max(vals)
+par(mar=c(5,5,4,2))
+plot(datClump$std_bzx, datClump$std_bzy, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+abline(0, gsmr_results_std$bxy, lwd=1.5, lty=2, col="dim grey")
+
+nsnps = length(datClump$std_bzx)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$std_bzx[i] - datClump$std_bzx_se[i]; xend = datClump$std_bzx[i] + datClump$std_bzx_se[i]
+    ystart = datClump$std_bzy[i]; yend = datClump$std_bzy[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$std_bzx[i]; xend = datClump$std_bzx[i]
+    ystart = datClump$std_bzy[i] - datClump$std_bzy_se[i]; yend = datClump$std_bzy[i] + datClump$std_bzy_se[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+dev.off()
+
+
+```
+
+## Add GSMR result to the plot
+
+```{r, message=FALSE}
+
+# Add GSMR result to MR base results
+resAll=res
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results$used_index),  gsmr_results$bxy, gsmr_results$bxy_se, gsmr_results$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+p1 <- mr_scatter_plot(resAll, datClump)
+
+png("MR_GSMR_allPlot_UKB_populationDensity.png", width=15, height=12, units = "cm", res=400)
+p1[[1]]
+dev.off()
+
+max(ldrho[upper.tri(ldrho)])
+
+# MR base without the 2 SNPs in HEIDI
+datClump=datClump[-which(datClump$SNP %in% c(gsmr_results$pleio_snps,gsmr_results$linkage_snps) ),]
+
+# Re-run MR on standardisedd effects
+datClump$beta.exposure=datClump$std_bzx
+datClump$se.exposure=datClump$std_bzx_se
+datClump$beta.outcome=datClump$std_bzy
+datClump$se.outcome=datClump$std_bzy_se
+
+resH <- mr(datClump )
+mr_report(datClump, output_path = "MR_SCZ_pred_popDen_Heidi_LD_STD")
+
+
+
+resAll=resH
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+
+# Plot results
+
+pdf("GSMR_results_SCZ_PodDen_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_SCZ_pred_PodDen/MR_GSMR_results_popDensity_SCZ_UKB_STD.csv")
+write.csv(datClump, "./MR_SCZ_pred_PodDen/MR_GSMR_results_popDensity_SCZ_UKB_STD_datClump.csv")
+
+
+```
+
+# Run MR base and GSMR of SCZ predicting Population density (controlling for SES)
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+scz_file <- read.table("../scz2.snp.results_subset.txt")
+colnames(scz_file)<-c("CHR", "SNP", "effect_allele", "other_allele", "BP", "INFO", "OR", "se", "pval", "ngt")
+scz_file$beta<-log(scz_file$OR)
+scz_file$exposure<-"scz"
+scz_file$CHRBP<-paste(substr(scz_file$CHR,start = 4, stop = 4), scz_file$BP, sep = ":")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = scz_file$SNP,
+      filename = "GWAS/PodDen2010GWAS.res",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "BETA",
+    se_col = "SE",
+    effect_allele_col = "ALLELE1",
+    other_allele_col = "ALLELE0",
+    eaf_col = "A1FREQ",
+    pval_col = "P_BOLT_LMM_INF") # Fewer SNPs than using QIMR (but could be due to imputation problems in the UKB)
+
+outcome_dat_UKB$samplesize.outcome=448679
+
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(scz_file$CHR)
+
+sczMR<-format_data(scz_file, type ="exposure")
+sczMR$samplesize.exposure<-150064
+
+datMR <- harmonise_data( exposure_dat = sczMR, outcome = outcome_dat_UKB, action = 2) # 5875 SNPs
+aa<-merge(sczMR, outcome_dat_UKB, by="SNP")
+
+datClump <- clump_data(datMR) # 96 SNPs (94 before)
+
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_SCZ_pred_PodDen_regSES/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_SCZ_pred_PodDen_regSES/SCZ_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+
+## Check LD matrix
+
+```{r, message=FALSE}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(ldrho) ) # in the same order 
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+```
+
+## Add GSMR result to the plot
+
+```{r, message=FALSE}
+
+# MR base without the SNPs in HEIDI
+datClumpH=datClump[-which(datClump$SNP %in% c(gsmr_results$pleio_snps, gsmr_results$linkage_snps) ),]
+
+# Re-run MR on the 93 SNPs
+datClumpH$beta.exposure=datClumpH$std_bzx
+datClumpH$se.exposure=datClumpH$std_bzx_se
+datClumpH$beta.outcome=datClumpH$std_bzy
+datClumpH$se.outcome=datClumpH$std_bzy_se
+
+resH <- mr(datClumpH )
+mr_report(datClumpH, study = "./MR_SCZ_pred_PodDen_regSES/MR_UKB_Popdensity_HEIDI")
+resAll=resH
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+datClump=datClumpH
+
+# Plot results
+pdf("GSMR_results_SCZ_PodDen_regSES_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_SCZ_pred_PodDen_regSES/MR_GSMR_results_popDensity_SCZ_UKB.csv")
+write.csv(datClumpH, "./MR_SCZ_pred_PodDen_regSES/MR_GSMR_results_popDensity_SCZ_UKB_datClump.csv")
+
+```
+
+
+
+# Run MR base and GSMR of SCZ predicting SES (controlling for population density)
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+scz_file <- read.table("../scz2.snp.results_subset.txt")
+colnames(scz_file)<-c("CHR", "SNP", "effect_allele", "other_allele", "BP", "INFO", "OR", "se", "pval", "ngt")
+scz_file$beta<-log(scz_file$OR)
+scz_file$exposure<-"scz"
+scz_file$CHRBP<-paste(substr(scz_file$CHR,start = 4, stop = 4), scz_file$BP, sep = ":")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = scz_file$SNP,
+      filename = "GWAS/SESGWAS_noPopDen.res",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "BETA",
+    se_col = "SE",
+    effect_allele_col = "ALLELE1",
+    other_allele_col = "ALLELE0",
+    eaf_col = "A1FREQ",
+    pval_col = "P_BOLT_LMM_INF") # Fewer SNPs than using QIMR (but could be due to imputation problems in the UKB)
+
+outcome_dat_UKB$samplesize.outcome=448679
+
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(scz_file$CHR)
+sczMR<-format_data(scz_file, type ="exposure")
+sczMR$samplesize.exposure<-150064
+datMR <- harmonise_data( exposure_dat = sczMR, outcome = outcome_dat_UKB, action = 2) # 5875 SNPs
+aa<-merge(sczMR, outcome_dat_UKB, by="SNP")
+datClump <- clump_data(datMR) # 96 SNPs (94 before)
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_SCZ_pred_SES_regPopDen/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_SCZ_pred_SES_regPopDen/SCZ_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+
+## Check LD matrix
+
+```{r, message=FALSE}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(ldrho) ) # in the same order 
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+
+# MR base without the SNPs in HEIDI
+datClumpH=datClump[-which(datClump$SNP %in% c(gsmr_results$pleio_snps, gsmr_results$linkage_snps) ),]
+
+# Re-run MR on the 93 SNPs
+datClumpH$beta.exposure=datClumpH$std_bzx
+datClumpH$se.exposure=datClumpH$std_bzx_se
+datClumpH$beta.outcome=datClumpH$std_bzy
+datClumpH$se.outcome=datClumpH$std_bzy_se
+
+resH <- mr(datClumpH )
+mr_report(datClumpH, study = "./MR_SCZ_pred_SES_regPopDen/MR_UKB_Popdensity_HEIDI")
+resAll=resH
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+datClump=datClumpH
+
+# Plot results
+pdf("GSMR_results_SCZ_SES_regPopDen_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_SCZ_pred_SES_regPopDen/MR_GSMR_results_SES_SCZ_UKB.csv")
+write.csv(datClump, "./MR_SCZ_pred_SES_regPopDen/MR_GSMR_results_SES_SCZ_UKB_datClump.csv")
+
+```
+
+
+
+# Run MR base and GSMR of SCZ predicting SES 
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+scz_file <- read.table("../scz2.snp.results_subset.txt")
+colnames(scz_file)<-c("CHR", "SNP", "effect_allele", "other_allele", "BP", "INFO", "OR", "se", "pval", "ngt")
+scz_file$beta<-log(scz_file$OR)
+scz_file$exposure<-"scz"
+scz_file$CHRBP<-paste(substr(scz_file$CHR,start = 4, stop = 4), scz_file$BP, sep = ":")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = scz_file$SNP,
+      filename = "GWAS/SESGWAS.res",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "BETA",
+    se_col = "SE",
+    effect_allele_col = "ALLELE1",
+    other_allele_col = "ALLELE0",
+    eaf_col = "A1FREQ",
+    pval_col = "P_BOLT_LMM_INF") # Fewer SNPs than using QIMR (but could be due to imputation problems in the UKB)
+
+outcome_dat_UKB$samplesize.outcome=448679
+
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(scz_file$CHR)
+
+sczMR<-format_data(scz_file, type ="exposure")
+sczMR$samplesize.exposure<-150064
+
+datMR <- harmonise_data( exposure_dat = sczMR, outcome = outcome_dat_UKB, action = 2) # 5875 SNPs
+aa<-merge(sczMR, outcome_dat_UKB, by="SNP")
+
+datClump <- clump_data(datMR) # 96 SNPs (94 before)
+
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_SCZ_pred_SES/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_SCZ_pred_SES/SCZ_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+
+## Check LD matrix
+
+```{r, message=FALSE}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(ldrho) ) # in the same order 
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+# MR base without the SNPs in HEIDI
+datClumpH=datClump[-which(datClump$SNP %in% c(gsmr_results$pleio_snps ,gsmr_results$linkage_snps) ),]
+
+# Re-run MR on the 93 SNPs
+datClumpH$beta.exposure=datClumpH$std_bzx
+datClumpH$se.exposure=datClumpH$std_bzx_se
+datClumpH$beta.outcome=datClumpH$std_bzy
+datClumpH$se.outcome=datClumpH$std_bzy_se
+
+resH <- mr(datClumpH )
+mr_report(datClumpH, study = "./MR_SCZ_pred_SES/MR_UKB_Popdensity_HEIDI")
+resAll=resH
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+datClump=datClumpH
+
+# Plot results
+pdf("GSMR_results_SCZ_SES_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Schizophrenia~(italic(b[zx]))),
+        ylab=expression(Population~density~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_SCZ_pred_SES/MR_GSMR_results_SES_SCZ_UKB.csv")
+write.csv(datClump, "./MR_SCZ_pred_SES/MR_GSMR_results_SES_SCZ_UKB_datClump.csv")
+
+```
+
+
+# Reverse MR base and GSMR of SES (controlling for population density) predicting SCZ
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+exp_file <- read.table("SESGWAS_signif.txt", header=T)
+colnames(exp_file)<-c("SNP", "CHR" , "BP" , "GENPOS", "effect_allele", "other_allele", "A1FREQ" , "F_MISS", "CHISQ_LINREG" ,"P_LINREG" ,"beta" , "se" ,"CHISQ_BOLT_LMM_INF","pval" , "CHISQ_BOLT_LMM", "P_BOLT_LMM" )
+  
+exp_file$exposure<-"ses"
+exp_file$CHRBP<-paste(exp_file$CHR, exp_file$BP, sep = "_")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = exp_file$SNP,
+      filename = "../daner_PGC_SCZ49.sh2_mds10_1000G-frq_2",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "OR",
+    se_col = "SE",
+    effect_allele_col = "A1",
+    other_allele_col = "A2",
+    eaf_col = "FRQ_A_33640",
+    pval_col = "P") # 168/171 SNPs
+outcome_dat_UKB$beta.outcome=log(outcome_dat_UKB$beta.outcome) # Convert OR into beta
+
+outcome_dat_UKB$samplesize.outcome=150064
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(exp_file$CHR)
+
+expMR<-format_data(exp_file, type ="exposure")
+expMR$samplesize.exposure<-448679
+
+datMR <- harmonise_data( exposure_dat = expMR, outcome = outcome_dat_UKB, action = 2) # 150 SNPs
+aa<-merge(expMR, outcome_dat_UKB, by="SNP")
+
+datClump <- clump_data(datMR) # 13 SNPs
+
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_SES_regPop_predSCZ/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_SES_regPop_predSCZ/SES_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+## Extract SNP data from the UKB to estimate the LD matrix
+
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="/gpfs1/scratch/group30days/cnsg_park/uqbcouvy/33_SCZ_PRS/GSMR/SES_reverseMR"
+cd ${wd}
+medici="/QRISdata/Q0286/UKBiobank/v2EUR_impHRC"
+
+${wd}/../../../qsubshcom " ${medici}/../../gcta64_1.91.4 --bfile ${medici}/ukbEUR_imp_chr{TASK_ID}_v2_imp_QC_HRC --extract ${wd}/SES_UKB_clumped_snps.allele --update-ref-allele ${wd}/SES_UKB_clumped_snps.allele --recode --out ${wd}/gsmr_SNPfile_CHR{TASK_ID} " 1 10G GSMR_ses 24:00:00 "-array=1-22 -acct=UQ-IMB-CNSG"
+
+```
+
+## Calculate LD matrix
+
+```{r, message=FALSE}
+
+snp0=read.table(paste0("0_Data/SES_reverseMR/gsmr_SNPfile_CHR", 1, ".xmat.gz"),header=T, stringsAsFactors = F)
+
+allSNP=as.data.frame(snp0$IID)
+colnames(allSNP)="IID"
+
+
+for (iii in 1:22){
+  snp=NULL
+  if (file.exists( paste0("0_Data/SES_reverseMR/gsmr_SNPfile_CHR", iii, ".xmat.gz") )){
+    snp=read.table(paste0("0_Data/SES_reverseMR/gsmr_SNPfile_CHR", iii, ".xmat.gz"),header=T, stringsAsFactors = F)
+    snp=snp[-1,] # get rid of reference allele
+    snp$FID=NULL
+    allSNP=merge(allSNP, snp, by="IID")
+  }
+    print(iii)
+}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(allSNP)[-1] ) # not in the same order 
+
+allSNPordered=as.data.frame(allSNP$IID)
+colnames(allSNPordered)="IID"
+for (snp in as.character(datClump$SNP)){
+  allSNPordered[,snp]=as.numeric(allSNP[,snp])
+  }
+
+cbind(as.character(datClump$SNP), colnames(allSNPordered)[-1] ) # in the same order 
+allSNPordered$IID=NULL
+
+# Calculate the LD correlation matrix
+ldrho = cor(allSNPordered, use = "p")
+
+```
+
+
+
+## Check LD matrix
+
+```{r, message=FALSE}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(ldrho) ) # in the same order 
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+```
+
+## Add GSMR result to the plot
+
+```{r, message=FALSE}
+
+# MR base without the SNPs in HEIDI
+datClumpH=datClump[-which(datClump$SNP %in% gsmr_results$pleio_snps),]
+
+datClumpH$beta.exposure=datClumpH$std_bzx
+datClumpH$se.exposure=datClumpH$std_bzx_se
+datClumpH$beta.outcome=datClumpH$std_bzy
+datClumpH$se.outcome=datClumpH$std_bzy_se
+
+resH <- mr(datClumpH )
+mr_report(datClumpH, study = "./MR_SES_regPop_predSCZ/MR_UKB_SES_regPopden_SCZ_HEIDI")
+resAll=resH
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+datClump=datClumpH
+
+# Plot results
+pdf("GSMR_results_SES_regPopDen_SCZ_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(SES~(italic(b[zx]))),
+        ylab=expression(Schizophrenia~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_SES_regPop_predSCZ/MR_GSMR_results_SES_SCZ_UKB.csv")
+write.csv(datClump, "./MR_SES_regPop_predSCZ/MR_GSMR_results_SES_SCZ_UKB_datClump.csv")
+
+```
+
+
+# Reverse MR base and GSMR of PopDensity (controlling for SES) predicting SCZ
+
+```{r, message=FALSE}
+
+# Open exposure data (already thresholed by p-value (faster))
+exp_file <- read.table("PodDen2010GWAS_signif.txt", header=T)
+colnames(exp_file)<-c("SNP", "CHR" , "BP" , "GENPOS", "effect_allele", "other_allele", "A1FREQ" , "F_MISS", "CHISQ_LINREG" ,"P_LINREG" ,"beta" , "se" ,"CHISQ_BOLT_LMM_INF","pval" , "CHISQ_BOLT_LMM", "P_BOLT_LMM" )
+  
+exp_file$exposure<-"popDen"
+exp_file$CHRBP<-paste(exp_file$CHR, exp_file$BP, sep = "_")
+
+aa=read_table2("../daner_PGC_SCZ49.sh2_mds10_1000G-frq_2.gz")
+
+outcome_dat_UKB <- read_outcome_data(
+    snps = exp_file$SNP,
+      filename = "../daner_PGC_SCZ49.sh2_mds10_1000G-frq_2",
+    sep = "\t",
+    snp_col = "SNP",
+    beta_col = "OR",
+    se_col = "SE",
+    effect_allele_col = "A1",
+    other_allele_col = "A2",
+    eaf_col = "FRQ_A_33640",
+    pval_col = "P") # 168/171 SNPs
+outcome_dat_UKB$beta.outcome=log(outcome_dat_UKB$beta.outcome) # Convert OR into beta
+
+outcome_dat_UKB$samplesize.outcome=150064
+# We just need to merge and get the chr:BP IDs to extract the LD matrix
+
+# Create MR-base file
+#scz_file$SNP<-scz_file$CHRBP
+table(exp_file$CHR)
+
+expMR<-format_data(exp_file, type ="exposure")
+expMR$samplesize.exposure<-448679
+
+datMR <- harmonise_data( exposure_dat = expMR, outcome = outcome_dat_UKB, action = 2) # 150 SNPs
+aa<-merge(expMR, outcome_dat_UKB, by="SNP")
+
+datClump <- clump_data(datMR) # 13 SNPs
+
+res <- mr(datClump )
+mr_report(datClump, output_path = "./MR_PopDen_regSES_predSCZ/")
+
+# Write merged SNP data to extract LD matrix for GSMR
+write.table(datClump[,c(1,2)], "./MR_PopDen_regSES_predSCZ/PopDen_UKB_clumped_snps.allele", col.names=F, row.names=F, quote=F)
+
+```
+
+## Extract SNP data from the UKB to estimate the LD matrix
+
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="/gpfs1/scratch/group30days/cnsg_park/uqbcouvy/33_SCZ_PRS/GSMR/PopDen_reverseMR"
+cd ${wd}
+medici="/QRISdata/Q0286/UKBiobank/v2EUR_impHRC"
+
+${wd}/../../../qsubshcom " ${medici}/../../gcta64_1.91.4 --bfile ${medici}/ukbEUR_imp_chr{TASK_ID}_v2_imp_QC_HRC --extract ${wd}/PopDen_UKB_clumped_snps.allele --update-ref-allele ${wd}/PopDen_UKB_clumped_snps.allele --recode --out ${wd}/gsmr_SNPfile_CHR{TASK_ID} " 1 10G GWAS_ses 24:00:00 "-array=1-22 -acct=UQ-IMB-CNSG"
+
+```
+
+## Calculate LD matrix
+
+```{r, message=FALSE}
+
+snp0=read.table(paste0("0_Data/PopDen_reverseMR/gsmr_SNPfile_CHR13.xmat.gz"),header=T, stringsAsFactors = F)
+
+allSNP=as.data.frame(snp0$IID)
+colnames(allSNP)="IID"
+
+
+for (iii in 1:22){
+  snp=NULL
+  if (file.exists( paste0("0_Data/PopDen_reverseMR/gsmr_SNPfile_CHR", iii, ".xmat.gz") )){
+    snp=read.table(paste0("0_Data/PopDen_reverseMR/gsmr_SNPfile_CHR", iii, ".xmat.gz"),header=T, stringsAsFactors = F)
+    snp=snp[-1,] # get rid of reference allele
+    snp=snp[which(snp$IID %in% snp0$IID),]
+    snp$FID=NULL
+    allSNP=merge(allSNP, snp, by="IID")
+  }
+    print(iii)
+}
+
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(allSNP)[-1] ) # not in the same order 
+
+allSNPordered=as.data.frame(allSNP$IID)
+colnames(allSNPordered)="IID"
+for (snp in as.character(datClump$SNP)){
+  allSNPordered[,snp]=as.numeric(allSNP[,snp])
+  }
+
+cbind(as.character(datClump$SNP), colnames(allSNPordered)[-1] ) # in the same order 
+allSNPordered$IID=NULL
+
+# Calculate the LD correlation matrix
+ldrho = cor(allSNPordered, use = "p")
+
+```
+
+
+
+## Check LD matrix
+
+```{r, message=FALSE}
+
+# Check order or SNPs
+cbind(as.character(datClump$SNP), colnames(ldrho) ) # in the same order 
+
+```
+
+
+## Run GSMR
+
+```{r, message=FALSE}
+ 
+# Standardisation
+std_zx = std_effect(datClump$eaf.outcome, datClump$beta.exposure, datClump$se.exposure, datClump$samplesize.exposure)  # perform standardize
+datClump$std_bzx=std_zx$b
+datClump$std_bzx_se=std_zx$se
+
+std_zy = std_effect(datClump$eaf.outcome, datClump$beta.outcome, datClump$se.outcome, datClump$samplesize.outcome)  # perform standardize
+datClump$std_bzy=std_zy$b
+datClump$std_bzy_se=std_zy$se
+
+# GSMR analysis
+gsmr_results = gsmr(bzx = datClump$beta.exposure, bzx_se = datClump$se.exposure, bzx_pval = datClump$pval.exposure, bzy = datClump$beta.outcome, bzy_se = datClump$se.outcome,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+# GSMR analysis (with standardised effects sizes)
+gsmr_results_std = gsmr(bzx = datClump$std_bzx, bzx_se = datClump$std_bzx_se, bzx_pval = datClump$pval.exposure, bzy = datClump$std_bzy, bzy_se = datClump$std_bzy_se,ldrho =  ldrho, snpid = as.character(datClump$SNP), n_ref = datClump$samplesize.exposure, heidi_outlier_flag = T, gwas_thresh = 5e-8, heidi_outlier_thresh = 0.01, ld_r2_thresh = 0.1) # non standardised
+
+
+```
+
+## Add GSMR result to the plot
+
+```{r, message=FALSE}
+
+datClump$beta.exposure=datClump$std_bzx
+datClump$se.exposure=datClump$std_bzx_se
+datClump$beta.outcome=datClump$std_bzy
+datClump$se.outcome=datClump$std_bzy_se
+
+res=mr(datClump)
+
+# No SNps in Heidi
+resAll=res
+resAll$method<-as.character(resAll$method)
+resAll[8,]<-c(res[1,1],  res[1,2], "outcome", "exposure", "GSMR", length(gsmr_results_std$used_index),  gsmr_results_std$bxy, gsmr_results_std$bxy_se, gsmr_results_std$bxy_pval)
+resAll$method<-as.factor(resAll$method)
+resAll$nsnp<-as.integer(resAll$nsnp)
+resAll$b<-as.double(resAll$b)
+resAll$se<-as.double(resAll$se)
+resAll$pval<-as.double(resAll$pval)
+
+# All results but using the GSMR syntax
+
+# Plot results
+pdf("GSMR_results_PoPDen_regSES_SES_UKB_GSMRsyntax_STD.pdf", width = 7, height = 8)
+par(oma = c(4, 1, 1, 1), mar=c(5,5,1,1))
+effect_col = "gray"
+vals = c(datClump$beta.exposure-datClump$se.exposure, datClump$beta.exposure+datClump$se.exposure)
+xmin = min(vals); xmax = max(vals)
+vals = c(datClump$beta.outcome-datClump$se.outcome, datClump$beta.outcome+datClump$se.outcome)
+ymin = min(vals); ymax = max(vals)
+plot(datClump$beta.exposure, datClump$beta.outcome, pch=20, cex=0.8, bty="n", cex.axis=1.1, cex.lab=1.2,
+        col=effect_col, xlim=c(xmin, xmax), ylim=c(ymin, ymax),
+        xlab=expression(Population~density~(italic(b[zx]))),
+        ylab=expression(Schizophrenia~(italic(b[zy]))))
+
+# Add regression lines from GSMR and other MR methods
+library(scales)
+allCols=dichromat_pal("Categorical.12")(12)[-c(1,3,5,7)]
+#show_col(allCols)
+for (mr in 1:length(resAll$method)){
+abline(0, resAll$b[mr], lwd=1.5, lty=1, col=allCols[mr])
+}
+
+nsnps = length(datClump$beta.exposure)
+for( i in 1:nsnps ) {
+    # x axis
+    xstart = datClump$beta.exposure[i] - datClump$se.exposure[i]; xend = datClump$beta.exposure[i] + datClump$se.exposure[i]
+    ystart = datClump$beta.outcome[i]; yend = datClump$beta.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+    # y axis
+    xstart = datClump$beta.exposure[i]; xend = datClump$beta.exposure[i]
+    ystart = datClump$beta.outcome[i] - datClump$se.outcome[i]; yend = datClump$beta.outcome[i] + datClump$se.outcome[i]
+    segments(xstart, ystart, xend, yend, lwd=1.5, col=effect_col)
+}
+par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+plot(0, 0, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend("bottom",legend = resAll$method[1:2], col = allCols[1:2], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.08) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[3:4], col = allCols[3:4], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.06) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[5:6], col = allCols[5:6], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.04) , cex=0.8, bty = "n", xpd = T)
+legend("bottom",legend = resAll$method[7:8], col = allCols[7:8], lwd = 1.5, lty = 1, horiz=T, inset=c(0,0.02) , cex=0.8, bty = "n", xpd = T)
+
+#legend(-0.7,-0.2,legend = resAll$method[4:8], col = allCols[4:8], lwd = 1.5, lty = 1, horiz=T,  cex=0.6, bty = "n", xpd = T)
+dev.off()
+
+# Write results 
+write.csv(resAll, "./MR_PopDen_regSES_predSCZ/MR_GSMR_results_PopDen_SCZ_UKB.csv")
+write.csv(datClump, "./MR_PopDen_regSES_predSCZ/MR_GSMR_results_PopDen_SCZ_UKB_datClump.csv")
+
+```
+
+<br><br>

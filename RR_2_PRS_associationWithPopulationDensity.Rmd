@@ -1,0 +1,471 @@
+---
+title: "Recovering post-codes of the UKB participants and crossing with census data"
+author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    code_folding: "show"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+# re install gsmr
+#install.packages("http://cnsgenomics.com/software/gsmr/static/gsmr_1.0.6.tar.gz",repos=NULL,type="source")
+
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(lmtest)
+library(readr)
+library(qqman)
+library(TwoSampleMR)
+library(gsmr)
+library(ggmap)
+```
+
+<br><br><br><br>
+
+# Description of variables
+
+```{r, message=FALSE}
+
+dat=read.csv("UKB_data_postcodeDistrict_fullSample.csv")
+
+png("Variable_histograms_UKB.png", width = 20, height = 10, units = "cm", res = 400)
+par(mfrow=c(2,4))
+par(mar=c(4,3,2,1))
+hist(dat$popDensityPostCode, xlab="Population density", breaks=500, main="")
+hist(dat$age, xlab="Age", breaks=500, main="")
+hist(dat$ses, xlab="SES", breaks=500, main="")
+hist(dat$prs49.s10, xlab="PRS P<1", breaks=500, main="")
+hist(dat$PC1, xlab="Genetic PC1", breaks=500, main="")
+hist(dat$PC2, xlab="Genetic PC2", breaks=500, main="")
+hist(dat$PC3, xlab="Genetic PC3", breaks=500, main="")
+hist(dat$PC4, xlab="Genetic PC4", breaks=500, main="")
+dev.off()
+
+```
+
+# Association testing with 20 genetic PCs - linear model
+
+> These results are provided as checks and sensitivity analyses, but the main results use LMM (see below)
+
+```{r, message=FALSE}
+
+dat=dat[-which(is.na(dat$prs49.s10)),]
+dat$prs49_s10=as.numeric(dat$prs49.s10)
+
+m1=glm("popDensityPostCode  ~ factor(sex) + prs49_s10 + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 ", family = gaussian(link = "identity"), data = dat)
+summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCode"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+#write.csv(m, "UKB_full_PopDen_assoc_PRS_ses_PCs.csv")
+bptest(m1)
+
+# Without SES
+m1=glm("popDensityPostCode ~ factor(sex) + prs49.s10 + age + age2 + ageSex + age2Sex + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20", family = gaussian(link = "identity"), data = dat)
+#summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCode"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+write.csv(m, "UKB_full_PopDen_assoc_PRS_withoutses_PCs.csv")
+bptest(m1)
+
+```
+
+## Association testing with 40 genetic PCs - linear model
+
+```{r, message=FALSE}
+
+dat=dat[-which(is.na(dat$prs49.s10)),]
+dat$prs49_s10=as.numeric(dat$prs49.s10)
+
+m1=glm("popDensityPostCode  ~ factor(sex) + prs49_s10 + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40 ", family = gaussian(link = "identity"), data = dat)
+summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCode"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+write.csv(m, "UKB_full_PopDen_assoc_PRS_ses_40PCs.csv")
+bptest(glm("popDensityPostCode  ~ factor(sex) + prs49_s10 + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40 ", family = gaussian(link = "identity"), data = dat))
+
+
+# Without SES
+m1=glm("popDensityPostCode ~ factor(sex) + prs49.s10 + age + age2 + ageSex + age2Sex + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40", family = gaussian(link = "identity"), data = dat)
+#summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCode"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+write.csv(m, "UKB_full_PopDen_assoc_PRS_withoutses_40PCs.csv")
+bptest(m1)
+
+hist(residuals.glm(m1))
+
+```
+
+## Association testing with 40 genetic PCs after inverse normal transformation - linear model
+
+```{r, message=FALSE}
+library(GenABEL)
+
+dat$popDensityPostCodeRnt=rntransform(dat$popDensityPostCode)
+
+m1=glm("popDensityPostCodeRnt  ~ factor(sex) + prs49.s10 + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40 ", family = gaussian(link = "identity"), data = dat)
+summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCodeRnt"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+write.csv(m, "UKB_full_PopDen_assoc_PRS_ses_40PCs_rnt.csv")
+bptest(glm("popDensityPostCodeRnt  ~ factor(sex) + prs49_s10 + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40 ", family = gaussian(link = "identity"), data = dat))
+
+hist(residuals.glm(m1))
+
+# Without SES
+m1=glm("popDensityPostCode ~ factor(sex) + prs49.s10 + age + age2 + ageSex + age2Sex + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36+ PC37 + PC38 + PC39 + PC40", family = gaussian(link = "identity"), data = dat)
+#summary(m1)
+
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd( as.matrix(dat[,var]), na.rm = T)/sd( as.matrix(dat[,"popDensityPostCode"]), na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+write.csv(m, "UKB_full_PopDen_assoc_PRS_withoutses_40PCs.csv")
+bptest(m1)
+
+hist(residuals.glm(m1))
+
+```
+
+
+## Correlations between SES and population density (total and by country)
+
+```{r, message=FALSE}
+
+m1=glm("PopulationDensity ~ factor(sex) + age + age2 + ageSex + age2Sex + ses + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20", family = gaussian(link = "identity"), data = scotland)
+#summary(m1)
+m=as.data.frame(summary(m1)$coefficients)
+m$r=NA
+for (var in rownames(m)[-c(1:2)]){
+  m[var,"r"]=signif(m[var,"Estimate"]*sd(scotland[,var], na.rm = T)/sd(scotland[,"PopulationDensity"], na.rm=T), 3)
+  
+}
+m$r2=signif(m$r**2, 3)
+m$Estimate=signif(m$Estimate, 3)
+m$`Std. Error`=signif(m$`Std. Error`, 3)
+m$`t value`=signif(m$`t value`, 3)
+m
+```
+
+# Write down files for GCTA models - linear mixed models - MAIN RESULTS
+
+```{r, message=FALSE}
+
+pheno=dat[,c("f.eid", "f.eid", "prs49.s10")]
+pheno=pheno[-which(is.na(pheno$prs49.s10)),]
+write.table(pheno, "UKB_prs.txt", col.names = F, row.names = F, quote=F)
+
+qcovar=dat[,c("f.eid", "f.eid", "sex")]
+write.table(qcovar, "UKB_qualitCovar.txt", col.names = F, row.names = F, quote=F)
+
+covar=dat[,c("f.eid", "f.eid", "popDensityPostCode","age", "ses")]
+covar=covar[-which(is.na(covar$popDensityPostCode)),]
+write.table(covar, "UKB_quantitCovar.txt", col.names = F, row.names = F, quote=F)
+
+covar=dat[,c("f.eid", "f.eid", "popDensityPostCode","age")]
+covar=covar[-which(is.na(covar$popDensityPostCode)),]
+write.table(covar, "UKB_quantitCovar_noSES.txt", col.names = F, row.names = F, quote=F)
+
+# Test the other way around (otherwise PRS h2=1 and the model is not interesting)
+pheno=dat[,c("f.eid", "f.eid", "popDensityPostCode")]
+pheno=pheno[-which(is.na(pheno$popDensityPostCode)),]
+write.table(pheno, "UKB_popDensity.txt", col.names = F, row.names = F, quote=F)
+
+for (iii in 1:10){
+covar=dat[,c("f.eid", "f.eid", paste0("prs49.s", iii),"age", "ses")]
+covar=covar[-which(is.na(covar[,paste0("prs49.s", iii)] )),]
+write.table(covar, paste0("UKB_quantitCovar_ses_prs",iii,".txt"), col.names = F, row.names = F, quote=F)
+}
+
+for (iii in 1:10){
+covar=dat[,c("f.eid", "f.eid", paste0("prs49.s", iii),"age")]
+covar=covar[-which(is.na(covar[,paste0("prs49.s", iii)] )),]
+write.table(covar, paste0("UKB_quantitCovar_NoSes_prs",iii,".txt"), col.names = F, row.names = F, quote=F)
+}
+
+# With ses 
+pheno=dat[,c("f.eid", "f.eid", "ses")]
+pheno=pheno[-which(is.na(pheno$ses)),]
+write.table(pheno, "UKB_ses.txt", col.names = F, row.names = F, quote=F)
+
+for (iii in 1:10){
+covar=dat[,c("f.eid", "f.eid", paste0("prs49.s", iii),"age", "popDensityPostCode")]
+covar=covar[-which(is.na(covar[,paste0("prs49.s", iii)] )),]
+write.table(covar, paste0("UKB_quantitCovar_popden_prs",iii,".txt"), col.names = F, row.names = F, quote=F)
+}
+
+```
+
+# run GCTA model
+
+```{r, message=FALSE}
+
+# Break down sample into subsamples of 50K so the memory requirement and computational time remains resonable
+
+IDsUnrel=read.table("ukbEUR_imp_all_v2_HM3_QC_HRCgrm_rel05.singleton.txt", sep="\t")
+
+for (iii in 1:7){
+  subset=(50000*(iii-1)+1):(50000*(iii))
+  print(range(subset))
+  chunk=IDsUnrel[subset,]
+  write.table(chunk, paste0("ukbEUR_imp_all_v2_HM3_QC_HRCgrm_rel05.singleton_chunk",iii,".txt"), col.names = F, row.names = F, quote=F, sep="\t")
+  
+}
+
+write.table(chunk[1:10000,], "ID10K.txt", col.names = F, row.names = F, quote=F, sep="\t")
+
+```
+
+# Now the LMM models are run using GCTA and the precalculated GRM
+
+> for qsubshcom (a wrapper for cluster submission) see https://github.com/zhilizheng/qsubshcom
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="working/directory"
+medici="where/the/GRM/lives"
+cd ${wd}
+
+# Subset GRM
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --grm /30days/GROUPS/cnsg_park/uqfrohar/UKB/ukbEUR_imp_all_v2_HM3_QC_HRCgrm --keep ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_rel05.singleton_chunk{TASK_ID}.txt --make-grm --grm-cutoff 4 --out ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID}" 1 4G GRM_subset 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+##########################
+# Run GCTA models - with the different covariate sets
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_prs.txt --qcovar ${wd}/UKB_quantitCovar.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID} --thread-num 5 " 5 120G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_popDensity.txt --qcovar ${wd}/UKB_quantitCovar2.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID}_popden --thread-num 5 " 5 120G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_ses.txt --qcovar ${wd}/UKB_quantitCovar3.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID}_ses --thread-num 5 " 5 120G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+############### 
+# Loop on all PRSs
+wd="/gpfs1/scratch/group30days/cnsg_park/uqbcouvy/33_SCZ_PRS/GCTA"
+cd ${wd}
+medici="/QRISdata/Q0286/UKBiobank/v2EUR_grmHRC"
+for prs in {1..10}
+do 
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_popDensity.txt --qcovar ${wd}/UKB_quantitCovar_ses_prs${prs}.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID}_popden_prs${prs} --thread-num 5 " 5 100G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.3.1 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_ses.txt --qcovar ${wd}/UKB_quantitCovar_popden_prs${prs}.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID}_ses_prs${prs} --thread-num 5 " 5 100G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+done 
+
+# No SES correction
+for prs in {1..10}
+do 
+${wd}/../../qsubshcom " ${medici}/../../gcta64_1.91.4 --reml --grm ${wd}/ukbEUR_imp_all_v2_HM3_QC_HRCgrm_chunk{TASK_ID} --pheno ${wd}/UKB_popDensity.txt --qcovar ${wd}/UKB_quantitCovar_NoSes_prs${prs}.txt --covar ${wd}/UKB_qualitCovar.txt --reml-est-fix --out ${wd}/ResultGCTA_chunk{TASK_ID}_popden_noSES_prs${prs} --thread-num 5 " 5 100G GCTA_REML_${iii} 48:00:00 "-array=1-7 -acct=UQ-IMB-CNSG"
+
+done 
+
+```
+
+## Meta-analyse GCTA results
+
+
+```{r, message=FALSE}
+
+library(meta)
+dat$popDensityPostCodeKM2=dat$popDensityPostCode/100
+fixeEffPRS=NULL
+h2=NULL
+for (iii in 1:7){
+  
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_popden.hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+  h2=rbind(h2,gcta[5,])
+
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+
+resPRS$pval.fixed
+resPRS$TE.random
+resPRS$seTE.random
+
+resh2=metagen(TE = as.numeric(h2$V2), seTE = as.numeric(h2$V3))
+
+resh2$pval.fixed
+resh2$TE.random
+resh2$seTE.random
+
+png("Forest_meta_h2_popdenUKB.png", width = 30, height = 10, units = "cm", res=400)
+forest(metagen(TE = as.numeric(h2$V2), seTE = as.numeric(h2$V3)))
+dev.off()
+
+png("Forest_meta_PRSassoc_popdenUKB.png", width = 30, height = 10, units = "cm", res=400)
+forest(metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T)))
+dev.off()
+
+#######################
+# Read results for all PRS and write down results for plotting 
+
+fixeEffPRS=NULL
+for (iii in 1:7){
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_popden.hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+
+resUKB_All=matrix(NA, nrow = 10, ncol = 3)
+colnames(resUKB_All)=c("R2", "SE", "PVALUE")
+rownames(resUKB_All)=paste0("prs49.s", 1:10)
+
+resUKB_All["prs49.s10",]=c((resPRS$TE.random**2), resPRS$seTE.random, resPRS$pval.fixed)
+
+# Loop on all other PRS
+for (prs in 1:9){
+fixeEffPRS=NULL
+for (iii in 1:7){
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_popden_prs",prs,".hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+resUKB_All[paste0("prs49.s", prs),]=c((resPRS$TE.random**2), resPRS$seTE.random, resPRS$pval.fixed)
+
+}
+
+write.csv(resUKB_All, "PRS_results_UKB_analysis.csv")
+
+######################
+# Without correcting for SES
+
+resUKB_All=matrix(NA, nrow = 10, ncol = 3)
+colnames(resUKB_All)=c("R2", "SE", "PVALUE")
+rownames(resUKB_All)=paste0("prs49.s", 1:10)
+
+# Loop on all other PRS
+for (prs in 1:10){
+fixeEffPRS=NULL
+for (iii in 1:7){
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_popden_noSES_prs",prs,".hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$popDensityPostCode, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+resUKB_All[paste0("prs49.s", prs),]=c((resPRS$TE.random**2), resPRS$seTE.random, resPRS$pval.fixed)
+
+}
+
+write.csv(resUKB_All, "PRS_results_UKB_analysis_noSES.csv")
+
+
+
+#######################
+# SES
+
+fixeEffPRS=NULL
+h2=NULL
+for (iii in 1:7){
+  
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_ses.hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+  h2=rbind(h2,gcta[5,])
+
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+
+resPRS$pval.fixed
+resPRS$TE.random
+resPRS$seTE.random
+
+resh2=metagen(TE = as.numeric(h2$V2), seTE = as.numeric(h2$V3))
+
+resh2$pval.fixed
+resh2$TE.random
+resh2$seTE.random
+
+png("Forest_meta_h2_sesUKB.png", width = 30, height = 10, units = "cm", res=400)
+forest(metagen(TE = as.numeric(h2$V2), seTE = as.numeric(h2$V3)))
+dev.off()
+
+png("Forest_meta_PRSassoc_sesUKB.png", width = 30, height = 10, units = "cm", res=400)
+forest(metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T)))
+dev.off()
+
+
+# Loop
+
+resUKB_All=matrix(NA, nrow = 10, ncol = 3)
+colnames(resUKB_All)=c("R2", "SE", "PVALUE")
+rownames(resUKB_All)=paste0("prs49.s", 1:10)
+
+# Loop on all other PRS
+for (prs in 1:10){
+fixeEffPRS=NULL
+for (iii in 1:7){
+  gcta=read.table(paste0("./GCTA/ResultGCTA_chunk", iii, "_ses_prs",prs,".hsq"), fill=T, stringsAsFactors = F)
+  fixeEffPRS=rbind(fixeEffPRS, gcta[14,])
+}
+
+resPRS=metagen(TE = as.numeric(fixeEffPRS$V1)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T), seTE = as.numeric(fixeEffPRS$V2)/sd(dat$ses, na.rm = T)*sd(dat$prs49.s10, na.rm = T))
+resUKB_All[paste0("prs49.s", prs),]=c((resPRS$TE.random**2), resPRS$seTE.random, resPRS$pval.fixed)
+
+}
+
+write.csv(resUKB_All, "PRS_results_UKB_analysis_ses_regPopDen.csv")
+
+```
+
+
+<br><br>

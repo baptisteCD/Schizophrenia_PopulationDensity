@@ -1,0 +1,68 @@
+---
+title: "Recovering post-codes of the UKB participants and crossing with census data"
+author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    code_folding: "show"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+# re install gsmr
+#install.packages("http://cnsgenomics.com/software/gsmr/static/gsmr_1.0.6.tar.gz",repos=NULL,type="source")
+
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+library(lmtest)
+library(readr)
+library(qqman)
+library(TwoSampleMR)
+library(gsmr)
+library(ggmap)
+```
+
+<br><br><br><br>
+
+# Run GWAS
+
+## Prepare files
+
+```{r, message=FALSE}
+
+dat=read.csv("UKB_data_postcodeDistrict_fullSample.csv")
+
+# Phenotype and covariates
+gwasdat=dat[,c("f.eid", "f.eid", "popDensityPostCode","age","sex", "age2", "ageSex", "age2Sex", "ses", "PC1", "PC2", "PC3", "PC4")]
+gwasdat=gwasdat[-which(rowSums(is.na(gwasdat))>0),] # 448,685
+colnames(gwasdat)=c("FID", "IID", "popDensityPostCode","age","sex", "age2", "ageSex", "age2Sex", "ses", "PC1", "PC2", "PC3", "PC4")
+write.table(gwasdat, "GWAS_data_populationDensityPostCode.txt", col.names = T, row.names = F, quote=F, sep=" ")
+
+```
+
+## Code to run GWAS using BOLT-LMM
+
+```{bash, message=FALSE,  eval = FALSE}
+
+wd="working/directory"
+medici="where/GRM/and/genetic/data/lives"
+cd ${wd}
+
+${wd}/../qsubshcom "recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList |; ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt --bed=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed --bim=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim --fam=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam --phenoFile=${wd}/GWAS_data_populationDensityPostCode.txt --phenoCol=popDensityPostCode --covarFile ${wd}/GWAS_data_populationDensityPostCode.txt --covarCol=sex --qCovarCol=age --qCovarCol=age2 --qCovarCol=ageSex --qCovarCol=age2Sex --qCovarCol=ses --qCovarCol=PC1 --qCovarCol=PC2 --qCovarCol=PC3 --qCovarCol=PC4 --numThreads=22 --exclude=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList --modelSnps=${medici}/UKBiobank_analysis/ukbEURu_imp_v2_HM3_QC_R2_09.snplist --LDscoresFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz  --verboseStats --geneticMapFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz --lmm --lmmForceNonInf --statsFile ${wd}/PodDen2010GWAS.res " 22 100G GWAS_PopDen 120:00:00 "-acct=UQ-IMB-CNSG"
+
+# Without SES
+
+${wd}/../qsubshcom "recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList |; ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt --bed=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed --bim=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim --fam=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam --phenoFile=${wd}/GWAS_data_populationDensityPostCode.txt --phenoCol=popDensityPostCode --covarFile ${wd}/GWAS_data_populationDensityPostCode.txt --covarCol=sex --qCovarCol=age --qCovarCol=age2 --qCovarCol=ageSex --qCovarCol=age2Sex --qCovarCol=PC1 --qCovarCol=PC2 --qCovarCol=PC3 --qCovarCol=PC4 --numThreads=22 --exclude=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList --modelSnps=${medici}/UKBiobank_analysis/ukbEURu_imp_v2_HM3_QC_R2_09.snplist --LDscoresFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz  --verboseStats --geneticMapFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz --lmm --lmmForceNonInf --statsFile ${wd}/PodDen2010GWAS_noSES.res " 22 100G GWAS_PopDen 120:00:00 "-acct=UQ-IMB-CNSG"
+
+# SES GWAS 
+
+${wd}/../qsubshcom "recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList |; ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt --bed=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed --bim=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim --fam=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam --phenoFile=${wd}/GWAS_data_populationDensityPostCode.txt --phenoCol=ses --covarFile ${wd}/GWAS_data_populationDensityPostCode.txt --covarCol=sex --qCovarCol=age --qCovarCol=age2 --qCovarCol=ageSex --qCovarCol=age2Sex --qCovarCol=popDensityPostCode --qCovarCol=PC1 --qCovarCol=PC2 --qCovarCol=PC3 --qCovarCol=PC4 --numThreads=22 --exclude=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList --modelSnps=${medici}/UKBiobank_analysis/ukbEURu_imp_v2_HM3_QC_R2_09.snplist --LDscoresFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz  --verboseStats --geneticMapFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz --lmm --lmmForceNonInf --statsFile ${wd}/SESGWAS.res " 22 100G GWAS_ses 120:00:00 "-acct=UQ-IMB-CNSG"
+
+# SES no popden
+${wd}/../qsubshcom "recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz |; recall_medici ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim |; recall_medici ${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList |; ${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/bolt --bed=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bed --bim=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr{1:22}_v2_imp_QC_HRC.bim --fam=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_chr1_v2_imp_QC_HRC.fam --phenoFile=${wd}/GWAS_data_populationDensityPostCode.txt --phenoCol=ses --covarFile ${wd}/GWAS_data_populationDensityPostCode.txt --covarCol=sex --qCovarCol=age --qCovarCol=age2 --qCovarCol=ageSex --qCovarCol=age2Sex --qCovarCol=PC1 --qCovarCol=PC2 --qCovarCol=PC3 --qCovarCol=PC4 --numThreads=22 --exclude=${medici}/UKBiobank/v2EUR_impHRC/ukbEUR_imp_all_v2_imp_QC_HRC_maf0001.EXCLUDEvarList --modelSnps=${medici}/UKBiobank_analysis/ukbEURu_imp_v2_HM3_QC_R2_09.snplist --LDscoresFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/LDSCORE.1000G_EUR.tab.gz  --verboseStats --geneticMapFile=${medici}/bin/ukb_gwas_tool/bin/BOLT-LMM_v2.3/tables/genetic_map_hg19_withX.txt.gz --lmm --lmmForceNonInf --statsFile ${wd}/SESGWAS_noPopDen.res " 22 100G GWAS_ses 120:00:00 "-acct=UQ-IMB-CNSG"
+
+```
+
+
+
+<br><br>
