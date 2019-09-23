@@ -275,6 +275,9 @@ hist(dat$Variable..Density..number.of.persons.per.hectare...measures..Value, bre
 
 length(unique(dat$PostcodeDistrictAll))
 
+# Merge fields
+dat$popDensityPostCode[which(is.na(dat$popDensityPostCode))]=dat$PopulationDensity[which(is.na(dat$popDensityPostCode))]
+
 ```
 
 
@@ -299,9 +302,11 @@ PCs=read_table2("0_Data/ukbEUR_PC40_v2.txt")
 dat=merge(dat, PCs, by.x="f.eid", by.y="IID", all.x=T)
 
 # Save table with all new fields used in the analysis
-write.table(dat[,c("f.eid", "PostcodeDistrictAll"  , "Altitude", "Admin.level.1",  "Admin.level.2" , "prs49.s1", "prs49.s2", "prs49.s3" , "prs49.s4" , "prs49.s5" , "prs49.s6"    , "prs49.s7", "prs49.s8", "prs49.s9" , "prs49.s10", "PC1" , "PC2", "PC3" , "PC4"  , "PC5" , "PC6", "PC7", "PC8"  ,"PC9"  , "PC10"   , "PC11"  , "PC12" , "PC13", "PC14"    , "PC15"   , "PC16"  , "PC17"     , "PC18"    , "PC19" , "PC20" , "PC21"  , "PC22"  , "PC23" , "PC24"     , "PC25"     , "PC26"  , "PC27"  , "PC28"  , "PC29"  , "PC30"   , "PC31"  , "PC32"    , "PC33" , "PC34" , "PC35"   , "PC36"     , "PC37"     ,"PC38"   , "PC39" , "PC40" )], "UKB_data_postcodeDistrict_fullSample_UKBreturnData.txt", row.names=F, col.names = T, quote=F, sep="\t")
-colnames(dat)
+write.table(dat[,c("f.eid", "PostcodeDistrictAll" ,"popDensityPostCode" , "Altitude", "Admin.level.1",  "Admin.level.2" , "prs49.s6",  "prs49.s10", "PC1" , "PC2", "PC3" , "PC4"  , "PC5" , "PC6", "PC7", "PC8"  ,"PC9"  , "PC10"   , "PC11"  , "PC12" , "PC13", "PC14"    , "PC15"   , "PC16"  , "PC17"     , "PC18"    , "PC19" , "PC20" , "PC21"  , "PC22"  , "PC23" , "PC24"     , "PC25"     , "PC26"  , "PC27"  , "PC28"  , "PC29"  , "PC30"   , "PC31"  , "PC32"    , "PC33" , "PC34" , "PC35"   , "PC36"     , "PC37"     ,"PC38"   , "PC39" , "PC40" )], "UKB_data_postcodeDistrict_fullSample_UKBreturnData.txt", row.names=F, col.names = T, quote=F, sep="\t")
+
 ```
+
+
 
 
 <br><br>
